@@ -1,0 +1,654 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "EKS Cookbook Cluster (dedicated VPC: true, dedicated IAM: true)”,
+  "Mappings": {
+    "ServicePrincipalPartitionMap": {
+      "aws": {
+        "EC2": "ec2.amazonaws.com",
+        "EKS": "eks.amazonaws.com",
+        "EKSFargatePods": "eks-fargate-pods.amazonaws.com"
+      },
+      "aws-cn": {
+        "EC2": "ec2.amazonaws.com.cn",
+        "EKS": "eks.amazonaws.com",
+        "EKSFargatePods": "eks-fargate-pods.amazonaws.com"
+      },
+      "aws-iso": {
+        "EC2": "ec2.c2s.ic.gov",
+        "EKS": "eks.amazonaws.com",
+        "EKSFargatePods": "eks-fargate-pods.amazonaws.com"
+      },
+      "aws-iso-b": {
+        "EC2": "ec2.sc2s.sgov.gov",
+        "EKS": "eks.amazonaws.com",
+        "EKSFargatePods": "eks-fargate-pods.amazonaws.com"
+      },
+      "aws-us-gov": {
+        "EC2": "ec2.amazonaws.com",
+        "EKS": "eks.amazonaws.com",
+        "EKSFargatePods": "eks-fargate-pods.amazonaws.com"
+      }
+    }
+  },
+  "Resources": {
+    "ClusterSharedNodeSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Communication between all nodes in the cluster",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}/ClusterSharedNodeSecurityGroup"
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "VPC"
+        }
+      }
+    },
+    "ControlPlane": {
+      "Type": "AWS::EKS::Cluster",
+      "Properties": {
+        "AccessConfig": {
+          "AuthenticationMode": "API_AND_CONFIG_MAP",
+          "BootstrapClusterCreatorAdminPermissions": true
+        },
+        "BootstrapSelfManagedAddons": false,
+        "KubernetesNetworkConfig": {
+          "IpFamily": "ipv4"
+        },
+        "Name": "my-eks-cookbook-cluster",
+        "ResourcesVpcConfig": {
+          "EndpointPrivateAccess": false,
+          "EndpointPublicAccess": true,
+          "SecurityGroupIds": [
+            {
+              "Ref": "ControlPlaneSecurityGroup"
+            }
+          ],
+          "SubnetIds": [
+            {
+              "Ref": "SubnetPublicUSEAST1F"
+            },
+            {
+              "Ref": "SubnetPublicUSEAST1B"
+            },
+            {
+              "Ref": "SubnetPrivateUSEAST1F"
+            },
+            {
+              "Ref": "SubnetPrivateUSEAST1B"
+            }
+          ]
+        },
+        "RoleArn": {
+          "Fn::GetAtt": [
+            "ServiceRole",
+            "Arn"
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}/ControlPlane"
+            }
+          }
+        ],
+        "Version": "1.30"
+      }
+    },
+    "ControlPlaneSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Communication between the control plane and worker nodegroups",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}/ControlPlaneSecurityGroup"
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "VPC"
+        }
+      }
+    },
+    "IngressDefaultClusterToNodeSG": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "Description": "Allow managed and unmanaged nodes to communicate with each other (all ports)",
+        "FromPort": 0,
+        "GroupId": {
+          "Ref": "ClusterSharedNodeSecurityGroup"
+        },
+        "IpProtocol": "-1",
+        "SourceSecurityGroupId": {
+          "Fn::GetAtt": [
+            "ControlPlane",
+            "ClusterSecurityGroupId"
+          ]
+        },
+        "ToPort": 65535
+      }
+    },
+    "IngressInterNodeGroupSG": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "Description": "Allow nodes to communicate with each other (all ports)",
+        "FromPort": 0,
+        "GroupId": {
+          "Ref": "ClusterSharedNodeSecurityGroup"
+        },
+        "IpProtocol": "-1",
+        "SourceSecurityGroupId": {
+          "Ref": "ClusterSharedNodeSecurityGroup"
+        },
+        "ToPort": 65535
+      }
+    },
+    "IngressNodeToDefaultClusterSG": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "Description": "Allow unmanaged nodes to communicate with control plane (all ports)",
+        "FromPort": 0,
+        "GroupId": {
+          "Fn::GetAtt": [
+            "ControlPlane",
+            "ClusterSecurityGroupId"
+          ]
+        },
+        "IpProtocol": "-1",
+        "SourceSecurityGroupId": {
+          "Ref": "ClusterSharedNodeSecurityGroup"
+        },
+        "ToPort": 65535
+      }
+    },
+    "InternetGateway": {
+      "Type": "AWS::EC2::InternetGateway",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}/InternetGateway"
+            }
+          }
+        ]
+      }
+    },
+    "NATGateway": {
+      "Type": "AWS::EC2::NatGateway",
+      "Properties": {
+        "AllocationId": {
+          "Fn::GetAtt": [
+            "NATIP",
+            "AllocationId"
+          ]
+        },
+        "SubnetId": {
+          "Ref": "SubnetPublicUSEAST1F"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}/NATGateway"
+            }
+          }
+        ]
+      }
+    },
+    "NATIP": {
+      "Type": "AWS::EC2::EIP",
+      "Properties": {
+        "Domain": "vpc",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}/NATIP"
+            }
+          }
+        ]
+      }
+    },
+    "NATPrivateSubnetRouteUSEAST1B": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "NatGatewayId": {
+          "Ref": "NATGateway"
+        },
+        "RouteTableId": {
+          "Ref": "PrivateRouteTableUSEAST1B"
+        }
+      }
+    },
+    "NATPrivateSubnetRouteUSEAST1F": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "NatGatewayId": {
+          "Ref": "NATGateway"
+        },
+        "RouteTableId": {
+          "Ref": "PrivateRouteTableUSEAST1F"
+        }
+      }
+    },
+    "PrivateRouteTableUSEAST1B": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}/PrivateRouteTableUSEAST1B"
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "VPC"
+        }
+      }
+    },
+    "PrivateRouteTableUSEAST1F": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}/PrivateRouteTableUSEAST1F"
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "VPC"
+        }
+      }
+    },
+    "PublicRouteTable": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}/PublicRouteTable"
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "VPC"
+        }
+      }
+    },
+    "PublicSubnetRoute": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": {
+          "Ref": "InternetGateway"
+        },
+        "RouteTableId": {
+          "Ref": "PublicRouteTable"
+        }
+      },
+      "DependsOn": [
+        "VPCGatewayAttachment"
+      ]
+    },
+    "RouteTableAssociationPrivateUSEAST1B": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "PrivateRouteTableUSEAST1B"
+        },
+        "SubnetId": {
+          "Ref": "SubnetPrivateUSEAST1B"
+        }
+      }
+    },
+    "RouteTableAssociationPrivateUSEAST1F": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "PrivateRouteTableUSEAST1F"
+        },
+        "SubnetId": {
+          "Ref": "SubnetPrivateUSEAST1F"
+        }
+      }
+    },
+    "RouteTableAssociationPublicUSEAST1B": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "PublicRouteTable"
+        },
+        "SubnetId": {
+          "Ref": "SubnetPublicUSEAST1B"
+        }
+      }
+    },
+    "RouteTableAssociationPublicUSEAST1F": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "PublicRouteTable"
+        },
+        "SubnetId": {
+          "Ref": "SubnetPublicUSEAST1F"
+        }
+      }
+    },
+    "ServiceRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "sts:AssumeRole"
+              ],
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  {
+                    "Fn::FindInMap": [
+                      "ServicePrincipalPartitionMap",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      "EKS"
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/AmazonEKSClusterPolicy"
+          },
+          {
+            "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/AmazonEKSVPCResourceController"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}/ServiceRole"
+            }
+          }
+        ]
+      }
+    },
+    "SubnetPrivateUSEAST1B": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "AvailabilityZone": "us-east-1b",
+        "CidrBlock": "192.168.96.0/19",
+        "Tags": [
+          {
+            "Key": "kubernetes.io/role/internal-elb",
+            "Value": "1"
+          },
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}/SubnetPrivateUSEAST1B"
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "VPC"
+        }
+      }
+    },
+    "SubnetPrivateUSEAST1F": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "AvailabilityZone": "us-east-1f",
+        "CidrBlock": "192.168.64.0/19",
+        "Tags": [
+          {
+            "Key": "kubernetes.io/role/internal-elb",
+            "Value": "1"
+          },
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}/SubnetPrivateUSEAST1F"
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "VPC"
+        }
+      }
+    },
+    "SubnetPublicUSEAST1B": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "AvailabilityZone": "us-east-1b",
+        "CidrBlock": "192.168.32.0/19",
+        "MapPublicIpOnLaunch": true,
+        "Tags": [
+          {
+            "Key": "kubernetes.io/role/elb",
+            "Value": "1"
+          },
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}/SubnetPublicUSEAST1B"
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "VPC"
+        }
+      }
+    },
+    "SubnetPublicUSEAST1F": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "AvailabilityZone": "us-east-1f",
+        "CidrBlock": "192.168.0.0/19",
+        "MapPublicIpOnLaunch": true,
+        "Tags": [
+          {
+            "Key": "kubernetes.io/role/elb",
+            "Value": "1"
+          },
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}/SubnetPublicUSEAST1F"
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "VPC"
+        }
+      }
+    },
+    "VPC": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": "192.168.0.0/16",
+        "EnableDnsHostnames": true,
+        "EnableDnsSupport": true,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}/VPC"
+            }
+          }
+        ]
+      }
+    },
+    "VPCGatewayAttachment": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "InternetGatewayId": {
+          "Ref": "InternetGateway"
+        },
+        "VpcId": {
+          "Ref": "VPC"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "ARN": {
+      "Value": {
+        "Fn::GetAtt": [
+          "ControlPlane",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}::ARN"
+        }
+      }
+    },
+    "CertificateAuthorityData": {
+      "Value": {
+        "Fn::GetAtt": [
+          "ControlPlane",
+          "CertificateAuthorityData"
+        ]
+      }
+    },
+    "ClusterSecurityGroupId": {
+      "Value": {
+        "Fn::GetAtt": [
+          "ControlPlane",
+          "ClusterSecurityGroupId"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}::ClusterSecurityGroupId"
+        }
+      }
+    },
+    "ClusterStackName": {
+      "Value": {
+        "Ref": "AWS::StackName"
+      }
+    },
+    "Endpoint": {
+      "Value": {
+        "Fn::GetAtt": [
+          "ControlPlane",
+          "Endpoint"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}::Endpoint"
+        }
+      }
+    },
+    "FeatureNATMode": {
+      "Value": "Single"
+    },
+    "SecurityGroup": {
+      "Value": {
+        "Ref": "ControlPlaneSecurityGroup"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}::SecurityGroup"
+        }
+      }
+    },
+    "ServiceRoleARN": {
+      "Value": {
+        "Fn::GetAtt": [
+          "ServiceRole",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}::ServiceRoleARN"
+        }
+      }
+    },
+    "SharedNodeSecurityGroup": {
+      "Value": {
+        "Ref": "ClusterSharedNodeSecurityGroup"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}::SharedNodeSecurityGroup"
+        }
+      }
+    },
+    "SubnetsPrivate": {
+      "Value": {
+        "Fn::Join": [
+          ",",
+          [
+            {
+              "Ref": "SubnetPrivateUSEAST1F"
+            },
+            {
+              "Ref": "SubnetPrivateUSEAST1B"
+            }
+          ]
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}::SubnetsPrivate"
+        }
+      }
+    },
+    "SubnetsPublic": {
+      "Value": {
+        "Fn::Join": [
+          ",",
+          [
+            {
+              "Ref": "SubnetPublicUSEAST1F"
+            },
+            {
+              "Ref": "SubnetPublicUSEAST1B"
+            }
+          ]
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}::SubnetsPublic"
+        }
+      }
+    },
+    "VPC": {
+      "Value": {
+        "Ref": "VPC"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}::VPC"
+        }
+      }
+    }
+  }
+}

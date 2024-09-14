@@ -1,0 +1,40 @@
+{
+  "provider": {
+    "aws": {
+      "region": "us-east-1"
+    }
+  },
+  "resource": {
+    "aws_eks_cluster": {
+      "myEKScluster": {
+        "name": "my-eks-cookbook-cluster",
+        "role_arn": "${aws_iam_role.eksClusterRole.arn}",
+        "vpc_config": {
+          "subnet_ids": ["subnet-abc123", "subnet-def456"]
+        }
+      }
+    },
+    "aws_iam_role": {
+      "eksClusterRole": {
+        "assume_role_policy": "${data.aws_iam_policy_document.eks_assume_role_policy.json}",
+        "managed_policy_arns": [
+          "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy",
+          "arn:aws:iam::aws:policy/AmazonEKSServicePolicy"
+        ]
+      }
+    }
+  },
+  "data": {
+    "aws_iam_policy_document": {
+      "eks_assume_role_policy": {
+        "statement": {
+          "actions": ["sts:AssumeRole"],
+          "principals": {
+            "type": "Service",
+            "identifiers": ["eks.amazonaws.com"]
+          }
+        }
+      }
+    }
+  }
+}
